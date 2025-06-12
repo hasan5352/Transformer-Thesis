@@ -1,0 +1,15 @@
+# Ignore downloaded datasets
+cifar_data/
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.gz
+
+
+# Python cache and env files
+__pycache__/
+*.pyc
+.env
+.venv
+*.ipynb_checkpoints
