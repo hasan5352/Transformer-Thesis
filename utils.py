@@ -1,6 +1,6 @@
 from torch.nn.utils.rnn import pad_sequence
 from typing import List, Tuple
-from torch.nn.functional import cross_entropy
+import torch.nn.functional as F
 import torch, wget, os, gzip, pickle, random, tarfile
 import numpy as np
 from torchvision import datasets
@@ -172,26 +172,46 @@ def batch_to_patches(batch, patch_size):
     patches = patches.permute(0, 2, 3, 1, 4, 5).reshape(B, -1, C * patch_size * patch_size)
     return patches  # (b, n, c * p^2)
 
+# ------------ testing function ------------
+def test_model(test_batches, model, device='cpu', print_metrics=False):
+    model.eval()
+    total_loss, correct_predictions, total_samples = 0, 0, 0
+    with torch.no_grad():           # Disable gradient computation during evaluation
+        
+        for x_batch, y_batch in test_batches:
+            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+            predictions = model(x_batch)
+            loss = F.cross_entropy(predictions, y_batch)
+
+            #calculate metrics
+            predicted_classes = torch.argmax(predictions, dim=1)
+            correct_predictions += (predicted_classes == y_batch).sum().item()
+            total_samples += y_batch.size(0)
+            total_loss += loss.item() * y_batch.size(0)
+
+    avg_loss = total_loss/total_samples
+    avg_accuracy = correct_predictions / total_samples
+    if print_metrics:
+        print(f"Val-Loss: {avg_loss:.4f}, Val-Accuracy:{avg_accuracy:.2f}")
+    return avg_loss, avg_accuracy
+
 # ------------ training function ------------
-def train_model(train_batches, model, optimizer, learning_rate=0.01, epochs=5, print_metrics=False):
-    optimizer.param_groups[0]['lr'] = learning_rate
+def train_model(
+        train_batches, model, optimizer, 
+        test_batches=None, num_epochs=5, device='cpu',
+        learning_rate=0.01, save_path="vit_saved.pth", print_metrics=False
+        ):
+    train_accs, train_losses, test_accs, test_losses = [], [], [], []
+    for epoch in range(1, num_epochs+1):
+        print(f"------- Epoch {epoch} -------")
+        total_loss, correct_predictions, total_samples = 0, 0, 0
 
-    # loop over epochs
-    accuracies = []
-    for epoch in range(1,epochs+1):
-        if print_metrics:
-            print(f"------- Epoch {epoch} -------")
-        train_loss, train_correct_predictions, train_samples = 0, 0, 0
-
-        # Training loop for the model
         model.train()
-        for x_batch, y_batch in train_batches:  # x_shape=(batch_size, words), y_shape=(sentences)
+        for x_batch, y_batch in train_batches:
+            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
 
-            # make predictions
-            predictions = model(x_batch)    # shape=(batch_size, num_classes)
-
-            # compute loss
-            loss = cross_entropy(predictions, y_batch)    # shape=integer -- avg loss of all sentences in batch
+            predictions = model(x_batch)                    # (B, num_classes)
+            loss = F.cross_entropy(predictions, y_batch)    # avg loss over batch
 
             # backprop
             optimizer.zero_grad()
@@ -200,44 +220,25 @@ def train_model(train_batches, model, optimizer, learning_rate=0.01, epochs=5, p
 
             # calculate metrics
             predicted_classes = torch.argmax(predictions, dim=1)
-            train_correct_predictions += (predicted_classes == y_batch).sum().item()
-            train_samples += y_batch.size(0)
-            train_loss += loss.item()
+            correct_predictions += (predicted_classes == y_batch).sum().item()
+            total_samples += y_batch.size(0)
+            total_loss += loss.item() * y_batch.size(0)
+
+        avg_loss = total_loss/total_samples
+        avg_accuracy = correct_predictions/total_samples
+        train_accs.append(avg_accuracy)
+        train_losses.append(avg_loss)
 
         if print_metrics:
-            avg_loss = train_loss/len(train_batches)
-            train_accuracy = train_correct_predictions / train_samples
-            print(f"Train-Loss: {avg_loss:.4f}, Train-Accuracy:{train_accuracy:.2f}")
-            accuracies.append(train_accuracy)
-    print()
+            print(f"Train-Loss: {avg_loss:.3f}, Train-Accuracy:{avg_accuracy:.2f}")
+        if test_batches is not None:
+            test_loss, test_acc = test_model(test_batches, model, device=device, print_metrics=print_metrics)
+            test_losses.append(test_loss)
+            test_accs.append(test_acc)
     
     # save trained model
-    save_path = "sentiment_model.pth"
     torch.save(model.state_dict(), save_path)
-    print(f"Model saved to {save_path}")
-    return accuracies
-
-
-# ------------ testing function ------------
-def test_model(val_batches, model, print_metrics=False):
-    # Evaluation loop for the model on validation set
-    model.eval()
-    val_loss, val_correct_predictions, val_samples = 0, 0, 0
-    with torch.no_grad():           # Disable gradient computation during evaluation
-        for x_batch, y_batch in val_batches:
-            predictions = model(x_batch)
-            loss = cross_entropy(predictions, y_batch)
-
-            #calculate metrics
-            predicted_classes = torch.argmax(predictions, dim=1)
-            val_correct_predictions += (predicted_classes == y_batch).sum().item()
-            val_samples += y_batch.size(0)
-            val_loss += loss.item()
-
-    avg_loss = val_loss/len(val_batches)
-    val_accuracy = val_correct_predictions / val_samples
-    if print_metrics:
-        print(f"Val-Loss: {avg_loss:.4f}, Val-Accuracy:{val_accuracy:.2f}")
-    return val_accuracy
+    print(f"\nModel saved to {save_path}")
+    return train_losses, train_accs, test_losses, test_accs
 
 
