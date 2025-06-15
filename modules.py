@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn.functional import softmax
+from utils import batch_to_patches
 
 
 def positional_encoding(batch_size, num_words, embedding_dim, device):
@@ -20,7 +21,7 @@ def apply_mask(batch):
     indices = torch.triu_indices(height, width, offset=1)
     batch[..., indices[0], indices[1]] = 0
 
-
+# Self Attention
 class MultiHeadAttention(nn.Module):
     def __init__(self, embedding_dim, heads, mask=False):
         super().__init__()
@@ -59,8 +60,35 @@ class MultiHeadAttention(nn.Module):
         # e. self attention output
         return self.attention_output_layer(concat_batch)       # (batch_size, words, embeds)
 
+class MultiHeadAttentionFast(nn.Module):
+    def __init__(self, embed_dim, heads, mask=False):
+        super().__init__()
+        assert embed_dim % heads == 0
+        self.heads = heads
+        self.head_dim = embed_dim // heads  # embeds / heads
+        self.mask = mask
+        
+        self.qkv = nn.Linear(embed_dim, embed_dim * 3)
+        self.attention_output_layer = nn.Linear(embed_dim, embed_dim)
+    
+    def forward(self, batch):   # batch = (B,N,E)
+        B, N, E = batch.shape
+        batch = self.qkv(batch).reshape(B, N, 3, self.heads, self.head_dim) # multiply batch with q,k,v at once.
+        q, k, v = batch.unbind(dim=2)   # each (B, T, H, D)
 
-# Encoder block
+        q = q.transpose(1, 2)  # (B, H, T, D)
+        k = k.transpose(1, 2)
+        v = v.transpose(1, 2)
+
+        scores = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)  # (B, H, N,N)
+        if self.mask:
+            scores = scores.masked_fill(torch.tril(torch.ones(N, N, device=scores.device)) == 0, float('-inf'))
+
+        scores = scores.softmax(dim=-1) @ v  # (B, H, T, D)
+        scores = scores.transpose(1, 2).reshape(B, N, E)
+        return self.attention_output_layer(scores)       # (B, N, E)
+
+# NLP Encoder block
 class TransformerEncoder(nn.Module):
     def __init__(self, embedding_dim, heads, mask=False):
         super().__init__()
@@ -80,3 +108,65 @@ class TransformerEncoder(nn.Module):
         batch1 = self.ff_layer2(relu(self.ff_layer1(batch)))   # same size
         return self.layer_norm2(batch + batch1)
     
+# Patch embedder for images
+class PatchEmbedding(nn.Module):
+    def __init__(self, embed_dim, img_size, patch_size, channels=3):
+        """ 
+        Assumes a batch of images as input and makes those ready for the transformer encoder: 
+            - Converts images in a batch to patches. 
+            - Creates embeddings for the patches.
+            - Prepends a learnable [CLS] token to patch embeddings for each image.
+            - Adds learnable positional encodings to patch embeddings for each image.
+        Args:
+            img_size (int): Height/width of input image (assumes square).
+            patch_size (int): Size of each patch (assumes square).
+            channels (int): Number of input image channels.
+            embed_dim (int): Dimension of patch embeddings.
+
+        Returns:
+            Tensor of shape (B, N+1, embed_dim), where N is number of patches and +1 is for the CLS token.
+        """
+        super().__init__()
+        self.patch_size = patch_size
+        num_patches = (img_size // patch_size)**2
+        self.embedding = nn.Linear(channels*patch_size*patch_size, embed_dim)   # linear projection of patches
+        self.cls_token = nn.Parameter(torch.randn(1,1,embed_dim))
+        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches+1, embed_dim))
+
+    def forward(self, batch):
+        """Expected input shape=(b,c,h,w)"""
+        B, C, H, W = batch.shape
+        assert H % self.patch_size == 0 and W % self.patch_size == 0, "Image size must be divisible by patch size"
+
+        batch = batch_to_patches(batch, self.patch_size)    # (b, n, c * p^2)
+        batch = self.embedding(batch)           # (b, n, e)
+        cls_tokens = self.cls_token.expand(B, -1, -1)   # copy cls tokens for all images
+        batch = torch.cat((cls_tokens, batch), dim=1)          # (b, n+1, e)
+        batch = batch + self.pos_embedding  # (b, n+1, e) & No need to expand pos_embed because pytorch automatically broadcasts.
+
+        return batch    # (b, n+1, e)
+    
+# ViT Encoder Block
+class VisionTransformerEncoder(nn.Module):
+    def __init__(self, embedding_dim, heads, dropout=0, mask=False):
+        super().__init__()
+        self.layer_norm1 = nn.LayerNorm(embedding_dim)
+        self.multi_head_attention = MultiHeadAttentionFast(embedding_dim, heads, mask=mask)
+        self.dropout1 = nn.Dropout(dropout)
+        self.layer_norm2 = nn.LayerNorm(embedding_dim)
+        self.mlp = nn.Sequential(
+            nn.Linear(embedding_dim, 4 * embedding_dim), 
+            nn.GELU(), 
+            nn.Linear(4 * embedding_dim, embedding_dim)
+            )
+        self.dropout2 = nn.Dropout(dropout)
+        
+    def forward(self, batch):
+        """Input shape=(B,N+1,E)
+        """
+        # First part: Norm + attention + residual
+        batch = self.dropout1(self.multi_head_attention(self.layer_norm1(batch))) + batch   # (B,N+1,E)
+
+        # second part: Norm + MLP + residual
+        batch = self.dropout2(self.mlp(self.layer_norm2(batch))) + batch
+        return batch    # (B,N+1,E)

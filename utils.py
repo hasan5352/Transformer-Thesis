@@ -1,8 +1,10 @@
 from torch.nn.utils.rnn import pad_sequence
 from typing import List, Tuple
 from torch.nn.functional import cross_entropy
-import torch, wget, os, gzip, pickle, random
+import torch, wget, os, gzip, pickle, random, tarfile
 import numpy as np
+from torchvision import datasets
+from typing import Union, Tuple, List, Callable
 
 # ------------ load imdb data ------------
 def load_imdb(final=False, val=5000, seed=0, voc=None, char=False):
@@ -89,9 +91,8 @@ def enwik8(path, n_train=int(90e6), n_valid=int(5e6), n_test=int(5e6)):
         trX, vaX, teX = np.split(X, [n_train, n_train + n_valid])
         return torch.from_numpy(trX), torch.from_numpy(vaX), torch.from_numpy(teX)
 
-
-# ------------ create batches ------------
-def create_batches(sequences, labels, batch_size=32, pad_token=0, device='cpu'):
+# ------------ create batches for sentences ------------
+def create_sentence_batches(sequences, labels, batch_size=32, pad_token=0, device='cpu'):
     """
     sequences: List[List[int]] -> integer encoded sentences
     labels: List[int] -> labels for each sentence
@@ -100,7 +101,6 @@ def create_batches(sequences, labels, batch_size=32, pad_token=0, device='cpu'):
     # sort data and labels by length
     sorted_data: List[Tuple[list,int]] = sorted(list(zip(sequences,labels)),key=lambda x: len(x[0]), reverse=True)
 
-    # create batches
     batches = []
     for i in range(0, len(sorted_data), batch_size):
         batch: List[tuple] = sorted_data[i : i + batch_size]
@@ -113,6 +113,64 @@ def create_batches(sequences, labels, batch_size=32, pad_token=0, device='cpu'):
 
     return batches
 
+# ------------ load CIFAR10 normal and corrupted data ------------
+def load_CIFAR10(normal_data_root:str, 
+                 corrupt_data_path:str, 
+                 transformations: Callable,
+                 corrupt_types:Union[Tuple[str], List[str]]=["gaussian_noise"],
+                 download_normal:bool=False,
+                 device = 'cpu'
+                 ):
+    """ 
+    Downloads or loads normal CIFAR10. Extracts corrupted CIFAR-10 into a folder named after the .tar file 
+        (without extension). Returns transformed normal and corrupted CIFAR10 in hashmaps.
+    Args:
+        normal_data_root (str): Path where normal CIFAR10 is saved or will be saved.
+        corrupt_data_path (str): Path of the .tar file storing corrupted CIFAR10.
+        corrupt_types (tuple or list, optional): Sequence of corruption types to load from corrupted CIFAR-10 
+            (matching the .npy filenames). Defaults to ["gaussian_noise"]. Labels are always returned.
+        transformations (callable): transformations to apply on normal CIFAR10.
+        download_normal (bool, optional): If True, download normal CIFAR10 at normal_data_root,
+            else load from disk. Defaults to False.
+        device: cpu or cuda
+    Returns:
+        tuple: Two dicts containing transformed normal and corrupted CIFAR10 datasets.
+    """
+    normal_data = {
+        "train" : datasets.CIFAR10(root=normal_data_root, train=True, download=download_normal, transform=transformations),
+        "test" : datasets.CIFAR10(root=normal_data_root, train=False, download=download_normal, transform=transformations)
+    }
+    # load corrupted .tar data file in a directory
+    with tarfile.open(corrupt_data_path, "r") as tar:
+        tar.extractall()
+    
+    # get foldername where corrupt data is stored from .tar file.
+    corrupt_foldername = os.path.splitext(os.path.basename(corrupt_data_path))[0]
+    
+    corrupt_data = {"labels":np.load(f"{corrupt_foldername}/labels.npy")}
+    mean = torch.tensor([0.4914, 0.4822, 0.4465]).to(device).view(1,3,1,1)
+    std = torch.tensor([0.247, 0.243, 0.261]).to(device).view(1,3,1,1)
+    for corrupt_type in corrupt_types:
+        imgs = np.load(f"{corrupt_foldername}/{corrupt_type}.npy")  # get imgs from folder
+        imgs = torch.from_numpy(imgs.astype('float32') / 255.).to(device)  # move to GPU
+        corrupt_data[corrupt_type] = (imgs.permute(0, 3, 1, 2) - mean) / std     # to [N, C, H, W]
+    
+    return normal_data, corrupt_data
+
+# ------------ from imgs to patches ------------
+def img_to_patches(img, patch_size):
+    """Returns image as a tensor of its flattened patches"""
+    C, H, W = img.shape
+    patches = img.unfold(1, patch_size, patch_size).unfold(2, patch_size, patch_size)
+    patches = patches.permute(1, 2, 0, 3, 4).reshape(-1, C * patch_size * patch_size)  # flatten patches
+    return patches  # (n, c * p^2)
+
+def batch_to_patches(batch, patch_size):
+    """Returns batch of images, where each image is a tensor of its flattened patches"""
+    B, C, H, W = batch.shape
+    patches = batch.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
+    patches = patches.permute(0, 2, 3, 1, 4, 5).reshape(B, -1, C * patch_size * patch_size)
+    return patches  # (b, n, c * p^2)
 
 # ------------ training function ------------
 def train_model(train_batches, model, optimizer, learning_rate=0.01, epochs=5, print_metrics=False):

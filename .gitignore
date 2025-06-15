@@ -1,5 +1,6 @@
 # Ignore downloaded datasets
 cifar_data/
+CIFAR-10-C/
 *.tar
 *.tar.gz
 *.tgz
