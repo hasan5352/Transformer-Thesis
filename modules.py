@@ -113,44 +113,73 @@ class TransformerEncoder(nn.Module):
         return self.layer_norm2(batch)
 
 # ----------------------------------------- Computer Vision ---------------------------------------------    
-# Patch embedder for images
+
+# Patch embedder
 class PatchEmbedding(nn.Module):
-    def __init__(self, embed_dim, img_size, patch_size, channels=3):
+    def __init__(self, embed_dim, patch_size, channels=3):
         """ 
-        Assumes a batch of images as input and makes those ready for the transformer encoder: 
+        Expects a batch of images as pytorch tensors as input and does the following: 
             - Converts images in a batch to patches. 
             - Creates embeddings for the patches.
-            - Prepends a learnable [CLS] token to patch embeddings for each image.
-            - Adds learnable positional encodings to patch embeddings for each image.
         Args:
-            img_size (int): Height/width of input image (assumes square).
+            embed_dim (int): Dimension of patch embeddings.
             patch_size (int): Size of each patch (assumes square).
             channels (int): Number of input image channels.
-            embed_dim (int): Dimension of patch embeddings.
-
         Returns:
-            Tensor of shape (B, N+1, embed_dim), where N is number of patches and +1 is for the CLS token.
+            Tensor of shape (B, N, embed_dim), where N is number of patches.
         """
         super().__init__()
         self.patch_size = patch_size
-        num_patches = (img_size // patch_size)**2
         self.embedding = nn.Linear(channels*patch_size*patch_size, embed_dim)   # linear projection of patches
-        self.cls_token = nn.Parameter(torch.randn(1,1,embed_dim))
-        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches+1, embed_dim))
-
+        
     def forward(self, batch):
-        """Expected input shape=(b,c,h,w)"""
+        """Expected input shape=(B,C,H,W)"""
         B, C, H, W = batch.shape
-        assert H % self.patch_size == 0 and W % self.patch_size == 0, "Image size must be divisible by patch size"
+        assert H % self.patch_size == 0 and W % self.patch_size == 0, "Image height and width must be divisible by patch size"
 
-        batch = batch_to_patches(batch, self.patch_size)    # (b, n, c * p^2) convert to patches
-        batch = self.embedding(batch)           # (b, n, e)
-        cls_tokens = self.cls_token.expand(B, -1, -1)   # copy cls tokens for all images
-        batch = torch.cat((cls_tokens, batch), dim=1)          # (b, n+1, e)
-        batch = batch + self.pos_embedding  # (b, n+1, e) & No need to expand pos_embed because pytorch automatically broadcasts.
+        batch = batch_to_patches(batch, self.patch_size)    # (B, N, C * p^2) convert to patches
+        return self.embedding(batch)    # (B, N, E)
 
-        return batch    # (b, n+1, e)
+# Add special tokens and positional encoding
+class AddSpecialTokensAndPositionEncoding(nn.Module):
+    def __init__(self, embed_dim, img_size, patch_size, distillation=False):
+        """ 
+        Expects a batch of embedded patches from the PatchEmbedding module and makes it ready for the transformer encoder: 
+            - Puts a learnable [CLS] token to patch embeddings for each image.
+            - If distillation=True, puts a learnable [distillation] token to patch embeddings for each image.
+            - Adds learnable positional encodings to patch embeddings for each image.
+        Args:
+            embed_dim (int): Dimension of patch embeddings.
+            img_size (int): Height/width of input image (assumes square).
+            patch_size (int): Size of each patch (assumes square).
+            distillation (bool): If true, add distillation tokens for each image.
+        Returns:
+            Tensor of shape (B, N+x, embed_dim), where N is number of patches and x is number of 
+            special tokens put for each image.
+        """
+        super().__init__()
+        num_patches = (img_size // patch_size)**2
+        x = 1
+        self.distillation = distillation
+        if self.distillation:
+            self.distill_token = nn.Parameter(torch.randn(1,1,embed_dim))
+            x += 1
+
+        self.cls_token = nn.Parameter(torch.randn(1,1,embed_dim))
+        self.pos_encoding = nn.Parameter(torch.randn(1, num_patches+x, embed_dim))
     
+    def forward(self, batch):
+        """Expected input shape=(B,N,E)"""
+        B = batch.shape[0]
+        cls_tokens = self.cls_token.expand(B, -1, -1)   # copy cls tokens for all images
+        if self.distillation:
+            distill_tokens = self.distill_token.expand(B, -1, -1)   # copy distill tokens for all images
+            batch = torch.cat((cls_tokens, distill_tokens, batch), dim=1)  # cls, distill, patches      (B, N+x, E)
+        else:
+            batch = torch.cat((cls_tokens, batch), dim=1)          # (B, N+x, E)
+        
+        return batch + self.pos_encoding  # (B, N+x, E)
+
 # ViT Encoder Block
 class VisionTransformerEncoder(nn.Module):
     def __init__(self, embedding_dim, heads, mlp_ratio=4, dropout=0, mask=False):
@@ -167,8 +196,7 @@ class VisionTransformerEncoder(nn.Module):
         self.dropout2 = nn.Dropout(dropout)
         
     def forward(self, batch):
-        """Input shape=(B,N+1,E)
-        """
+        """Input shape=(B,N+x,E)"""
         # First part: Norm + attention + residual
         batch = self.dropout1(self.multi_head_attention(self.layer_norm1(batch))) + batch   # (B,N+1,E)
 
