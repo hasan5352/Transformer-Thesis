@@ -36,7 +36,8 @@ class MultiHeadAttention(nn.Module):
         self.V_layers = nn.ModuleList([nn.Linear(embedding_dim, self.head_dim) for _ in range(heads)])
         self.attention_output_layer = nn.Linear(embedding_dim, embedding_dim)
     
-    def forward(self, batch):   # batch = (batch_size, words, embeds)
+    def forward(self, batch):
+        """Expected input shape=(B,N+x,E) for ViT & (B,N,E) for NLP"""
         concat_batch = []              
         for i in range(self.heads):
             # a. QKV calculation         # (batch_size, words, embeds/heads)
@@ -58,7 +59,7 @@ class MultiHeadAttention(nn.Module):
         # d. concat output of heads
         concat_batch = torch.cat(concat_batch, dim=-1)      # (batch_size, words, embeds)
         # e. self attention output
-        return self.attention_output_layer(concat_batch)       # (batch_size, words, embeds)
+        return self.attention_output_layer(concat_batch)       # (batch_size, words+x, embeds)
 
 class MultiHeadAttentionFast(nn.Module):
     def __init__(self, embed_dim, heads, mask=False):
@@ -71,7 +72,8 @@ class MultiHeadAttentionFast(nn.Module):
         self.qkv = nn.Linear(embed_dim, embed_dim * 3)
         self.attention_output_layer = nn.Linear(embed_dim, embed_dim)
     
-    def forward(self, batch):   # batch = (B,N,E)
+    def forward(self, batch):
+        """Expected input shape=(B,N+x,E) for ViT & (B,N,E) for NLP"""
         B, N, E = batch.shape
         batch = self.qkv(batch).reshape(B, N, 3, self.heads, self.head_dim) # multiply batch with q,k,v at once.
         q, k, v = batch.unbind(dim=2)   # each (B, T, H, D)
@@ -86,7 +88,7 @@ class MultiHeadAttentionFast(nn.Module):
 
         scores = scores.softmax(dim=-1) @ v  # (B, H, T, D)
         scores = scores.transpose(1, 2).reshape(B, N, E)
-        return self.attention_output_layer(scores)       # (B, N, E)
+        return self.attention_output_layer(scores)       # (B, N+x, E)
 
 # NLP Encoder block
 class TransformerEncoder(nn.Module):
@@ -198,8 +200,8 @@ class VisionTransformerEncoder(nn.Module):
     def forward(self, batch):
         """Input shape=(B,N+x,E)"""
         # First part: Norm + attention + residual
-        batch = self.dropout1(self.multi_head_attention(self.layer_norm1(batch))) + batch   # (B,N+1,E)
+        batch = self.dropout1(self.multi_head_attention(self.layer_norm1(batch))) + batch   # (B,N+x,E)
 
         # second part: Norm + MLP + residual
         batch = self.dropout2(self.mlp(self.layer_norm2(batch))) + batch
-        return batch    # (B,N+1,E)
+        return batch    # (B,N+x,E)

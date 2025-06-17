@@ -1,3 +1,11 @@
+IDEAS:
+-  More distill tokens and more teachers
+- architectual changes
+- Is CIFAR10 good enough to evaluate transformers so we dont have to use more data
+- Types of attention on DEIT
+
+
+PAPERS:
 - AN IMAGE IS WORTH 16X16 WORDS: TRANSFORMERS FOR IMAGE RECOGNITION AT SCALE
 
 - Vision Transformer for Small-Size Datasets
@@ -9,3 +17,4 @@
 - Powerful Design of Small Vision Transformer on CIFAR10
 
 - Training data-efficient image transformers & distillation through attention
+

@@ -33,6 +33,7 @@ class VisionTransformer(nn.Module):
             num_classes, channels=3, attention_heads=2, 
             num_encoders=2, mlp_ratio=4, dropout=0
             ):
+        assert num_classes > 0, "num_classes must be at least 1"
         super().__init__()
         self.patch_embedding = PatchEmbedding(embed_dim, img_size,patch_size, channels=channels)
         self.special_tokens_pos_encoding = AddSpecialTokensAndPositionEncoding(embed_dim, img_size, patch_size)
@@ -63,7 +64,27 @@ class DistilledVisionTransformer(VisionTransformer):
             num_classes, channels=3, attention_heads=2, 
             num_encoders=2, mlp_ratio=4, dropout=0
             ):
-        super().__init__()
+        super().__init__(embed_dim, img_size, patch_size, 
+            num_classes, channels=channels, attention_heads=attention_heads, 
+            num_encoders=num_encoders, mlp_ratio=mlp_ratio, dropout=dropout)
+        self.special_tokens_pos_encoding = AddSpecialTokensAndPositionEncoding(embed_dim, img_size, patch_size, distillation=True)
+        self.cls_head = nn.Linear(embed_dim, num_classes)
+        self.distill_head = nn.Linear(embed_dim, num_classes)
+    
+    def process_forward(self, batch):
+        """Expected input shape = (B,C,H,W)"""
+        batch = self.patch_embedding(batch)       # (B, N, E)
+        batch = self.special_tokens_pos_encoding(batch)     # (B, N+x, E)
+        batch = self.vit_encoders(batch)
+
+        return batch[:, 0, :], batch[:, 1, :]  # cls and distill tokens. Both of shape=(B, E)
     
     def forward(self, batch):
         """Expected input shape = (B,C,H,W)"""
+        batch, distill_tokens = self.process_forward(batch)
+        batch = self.cls_head(batch)                            # (B, num_classes) cls
+        distill_tokens = self.distill_head(distill_tokens)      # (B, num_classes) distill
+
+        if self.training: # implemented in torch     # (B, num_classes)
+            return batch, distill_tokens    
+        return (batch + distill_tokens) / 2     # during testing return avg of both
