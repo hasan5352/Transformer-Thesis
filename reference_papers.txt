@@ -7,3 +7,5 @@
 - Attention is all you need 
 
 - Powerful Design of Small Vision Transformer on CIFAR10
+
+- Training data-efficient image transformers & distillation through attention

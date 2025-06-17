@@ -90,24 +90,29 @@ class MultiHeadAttentionFast(nn.Module):
 
 # NLP Encoder block
 class TransformerEncoder(nn.Module):
-    def __init__(self, embedding_dim, heads, mask=False):
+    def __init__(self, embedding_dim, heads, mlp_ratio=4, dropout=0, mask=False):
         super().__init__()
         self.multi_head_attention = MultiHeadAttention(embedding_dim, heads, mask=mask)
-        self.layer_norm1 = nn.LayerNorm(embedding_dim)
-        self.ff_layer1 = nn.Linear(embedding_dim, 4 * embedding_dim)
-        self.ff_layer2 = nn.Linear(4 * embedding_dim, embedding_dim)
-        self.layer_norm2 = nn.LayerNorm(embedding_dim)
+        self.dropout1 = nn.Dropout(dropout)
+        self.layer_norm1 = nn.LayerNorm(embedding_dim, eps=1e-6)
+        self.mlp = nn.Sequential(
+            nn.Linear(embedding_dim, mlp_ratio * embedding_dim), 
+            nn.ReLU(inplace=True), 
+            nn.Linear(mlp_ratio * embedding_dim, embedding_dim)
+            )
+        self.dropout2 = nn.Dropout(dropout)
+        self.layer_norm2 = nn.LayerNorm(embedding_dim, eps=1e-6)
 
     def forward(self, batch):
         # First part: attention + residual + Norm
-        batch = batch + self.multi_head_attention(batch)    # (batch_size, words, embeds)
+        batch = self.dropout1(self.multi_head_attention(batch)) + batch    # (batch_size, words, embeds)
         batch = self.layer_norm1(batch)  # same size
 
         # second part: ANN + residual + Norm
-        relu = nn.ReLU(inplace=True)
-        batch1 = self.ff_layer2(relu(self.ff_layer1(batch)))   # same size
-        return self.layer_norm2(batch + batch1)
-    
+        batch = self.dropout2(self.mlp(batch)) + batch   # same size
+        return self.layer_norm2(batch)
+
+# ----------------------------------------- Computer Vision ---------------------------------------------    
 # Patch embedder for images
 class PatchEmbedding(nn.Module):
     def __init__(self, embed_dim, img_size, patch_size, channels=3):
@@ -138,7 +143,7 @@ class PatchEmbedding(nn.Module):
         B, C, H, W = batch.shape
         assert H % self.patch_size == 0 and W % self.patch_size == 0, "Image size must be divisible by patch size"
 
-        batch = batch_to_patches(batch, self.patch_size)    # (b, n, c * p^2)
+        batch = batch_to_patches(batch, self.patch_size)    # (b, n, c * p^2) convert to patches
         batch = self.embedding(batch)           # (b, n, e)
         cls_tokens = self.cls_token.expand(B, -1, -1)   # copy cls tokens for all images
         batch = torch.cat((cls_tokens, batch), dim=1)          # (b, n+1, e)
@@ -148,16 +153,16 @@ class PatchEmbedding(nn.Module):
     
 # ViT Encoder Block
 class VisionTransformerEncoder(nn.Module):
-    def __init__(self, embedding_dim, heads, dropout=0, mask=False):
+    def __init__(self, embedding_dim, heads, mlp_ratio=4, dropout=0, mask=False):
         super().__init__()
-        self.layer_norm1 = nn.LayerNorm(embedding_dim)
+        self.layer_norm1 = nn.LayerNorm(embedding_dim, eps=1e-6)
         self.multi_head_attention = MultiHeadAttentionFast(embedding_dim, heads, mask=mask)
         self.dropout1 = nn.Dropout(dropout)
-        self.layer_norm2 = nn.LayerNorm(embedding_dim)
+        self.layer_norm2 = nn.LayerNorm(embedding_dim, eps=1e-6)
         self.mlp = nn.Sequential(
-            nn.Linear(embedding_dim, 4 * embedding_dim), 
+            nn.Linear(embedding_dim, mlp_ratio * embedding_dim), 
             nn.GELU(), 
-            nn.Linear(4 * embedding_dim, embedding_dim)
+            nn.Linear(mlp_ratio * embedding_dim, embedding_dim)
             )
         self.dropout2 = nn.Dropout(dropout)
         

@@ -239,6 +239,8 @@ def train_model(
     # save trained model
     torch.save(model.state_dict(), save_path)
     print(f"\nModel saved to {save_path}")
-    return train_losses, train_accs, test_losses, test_accs
+    if test_batches is not None:
+        return train_losses, train_accs, test_losses, test_accs
+    return train_losses, train_accs
 
 
