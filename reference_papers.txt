@@ -1,9 +1,8 @@
 IDEAS:
--  More distill tokens and more teachers
-- architectual changes
-- Is CIFAR10 good enough to evaluate transformers so we dont have to use more data
-- Types of attention on DEIT
+-> training data made up of 10k images from each corruption type.
 
+-  Add additional corrupt token to deit architecture which is trained by true corruption type
+-  Send 2 versions of the same image in model and then check corrupt token influence
 
 PAPERS:
 - AN IMAGE IS WORTH 16X16 WORDS: TRANSFORMERS FOR IMAGE RECOGNITION AT SCALE
@@ -17,4 +16,8 @@ PAPERS:
 - Powerful Design of Small Vision Transformer on CIFAR10
 
 - Training data-efficient image transformers & distillation through attention
+
+- Improving Robustness of Vision Transformers by Reducing Sensitivity to Patch Corruptions
+
+
 

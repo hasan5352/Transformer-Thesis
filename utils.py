@@ -122,11 +122,11 @@ def load_CIFAR10(normal_data_root:str,
                  device = 'cpu'
                  ):
     """ 
-    Downloads or loads normal CIFAR10. Extracts corrupted CIFAR-10 into a folder named after the .tar file 
-        (without extension). Returns transformed normal and corrupted CIFAR10 in hashmaps.
+    Returns transformed normal and corrupted CIFAR10 in hashmaps.
     Args:
         normal_data_root (str): Path where normal CIFAR10 is saved or will be saved.
-        corrupt_data_path (str): Path of the .tar file storing corrupted CIFAR10.
+        corrupt_data_path (str): Path of the folder containing .npy files of corrupted 
+            CIFAR10 (First extract .tar file of corrupted CIFAR10).
         corrupt_types (tuple or list, optional): Sequence of corruption types to load from corrupted CIFAR-10 
             (matching the .npy filenames). Defaults to ["gaussian_noise"]. Labels are always returned.
         transformations (callable): transformations to apply on normal CIFAR10.
@@ -140,18 +140,13 @@ def load_CIFAR10(normal_data_root:str,
         "train" : datasets.CIFAR10(root=normal_data_root, train=True, download=download_normal, transform=transformations),
         "test" : datasets.CIFAR10(root=normal_data_root, train=False, download=download_normal, transform=transformations)
     }
-    # load corrupted .tar data file in a directory
-    with tarfile.open(corrupt_data_path, "r") as tar:
-        tar.extractall()
     
-    # get foldername where corrupt data is stored from .tar file.
-    corrupt_foldername = os.path.splitext(os.path.basename(corrupt_data_path))[0]
-    
-    corrupt_data = {"labels":np.load(f"{corrupt_foldername}/labels.npy")}
+    # get corrupt data.
+    corrupt_data = {"labels":np.load(f"{corrupt_data_path}/labels.npy")}
     mean = torch.tensor([0.4914, 0.4822, 0.4465]).to(device).view(1,3,1,1)
     std = torch.tensor([0.247, 0.243, 0.261]).to(device).view(1,3,1,1)
     for corrupt_type in corrupt_types:
-        imgs = np.load(f"{corrupt_foldername}/{corrupt_type}.npy")  # get imgs from folder
+        imgs = np.load(f"{corrupt_data_path}/{corrupt_type}.npy")  # get imgs from folder
         imgs = torch.from_numpy(imgs.astype('float32') / 255.).to(device)  # move to GPU
         corrupt_data[corrupt_type] = (imgs.permute(0, 3, 1, 2) - mean) / std     # to [N, C, H, W]
     

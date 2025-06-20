@@ -35,7 +35,7 @@ class VisionTransformer(nn.Module):
             ):
         assert num_classes > 0, "num_classes must be at least 1"
         super().__init__()
-        self.patch_embedding = PatchEmbedding(embed_dim, img_size,patch_size, channels=channels)
+        self.patch_embedding = PatchEmbedding(embed_dim, patch_size, channels=channels)
         self.special_tokens_pos_encoding = AddSpecialTokensAndPositionEncoding(embed_dim, img_size, patch_size)
         self.vit_encoders = nn.Sequential(*[
             VisionTransformerEncoder(embed_dim, attention_heads, mlp_ratio=mlp_ratio, dropout=dropout) for _ in range(num_encoders)
