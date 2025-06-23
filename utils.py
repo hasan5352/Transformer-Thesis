@@ -4,6 +4,9 @@ import torch.nn.functional as F
 import torch, wget, os, gzip, pickle, random, tarfile
 import numpy as np
 from torchvision import datasets
+import torchvision.transforms as T
+from torch.utils.data import DataLoader
+from PIL import Image
 from typing import Union, Tuple, List, Callable
 
 # ------------ load imdb data ------------
@@ -114,13 +117,14 @@ def create_sentence_batches(sequences, labels, batch_size=32, pad_token=0, devic
     return batches
 
 # ------------ load CIFAR10 normal and corrupted data ------------
-def load_CIFAR10(normal_data_root:str, 
-                 corrupt_data_path:str, 
-                 transformations: Callable,
-                 corrupt_types:Union[Tuple[str], List[str]]=["gaussian_noise"],
-                 download_normal:bool=False,
-                 device = 'cpu'
-                 ):
+def load_CIFAR10(
+        normal_data_root:str, 
+        corrupt_data_path:str, 
+        transformations: Callable,
+        corrupt_types:Union[Tuple[str], List[str]]=["gaussian_noise"],
+        download_normal:bool=False,
+        device = 'cpu'
+        ):
     """ 
     Returns transformed normal and corrupted CIFAR10 in hashmaps.
     Args:
@@ -151,6 +155,101 @@ def load_CIFAR10(normal_data_root:str,
         corrupt_data[corrupt_type] = (imgs.permute(0, 3, 1, 2) - mean) / std     # to [N, C, H, W]
     
     return normal_data, corrupt_data
+
+
+# load shuffled tiny imagenet
+def load_experimental_TinyImageNet(
+        normal_data_path: str,
+        corrupt_data_path: str, 
+        corrupt_types=["motion_blur"],
+        num_train_imgs=40,
+        num_test_imgs=4,
+    ):
+    """ 
+    Returns transformed normal and corrupted Tiny ImageNet mixed and shuffled together. 
+    Preferably save the data after execution.
+    Args:
+        normal_data_path (str): Path where normal Tiny ImageNet is saved.
+        corrupt_data_path (str): Path of the directory containing folders of Tiny ImageNet corruptions.
+        corrupt_types (tuple or list): Sequence of corruption types to load from corrupted Tiny ImageNet
+            (matching to the folder names). Defaults to ["motion_blur"].
+        device: cpu or cuda. Defaults to "cpu".
+    Returns:
+        train and test experiment data. Each is a tuple of tensors: (images, labels, corruption type)
+    """
+    mean = (0.4802, 0.4481, 0.3975)
+    std = (0.2302, 0.2265, 0.2262)
+    transform = T.Compose([
+        T.ToTensor(),
+        T.Normalize(mean, std)
+    ])
+
+    class_names = sorted(os.listdir(os.path.join(normal_data_path, "train")))
+    label_map = {cls: i for i, cls in enumerate(class_names)}
+    corruption_map = {c: i for i, c in enumerate(corrupt_types)}
+    corruption_map["normal"] = len(corrupt_types)
+
+    train_imgs, test_imgs = [], []
+    train_labels, test_labels = [], []
+    train_corrupts, test_corrupts = [], []
+
+    # collect corrupted data
+    if len(corrupt_types) != 0:
+        for corrupt_type in corrupt_types:
+            for severity in range(1, 6):
+                path = os.path.join(corrupt_data_path, corrupt_type, str(severity))
+                dataset = datasets.ImageFolder(root=path, transform=transform)
+                loader = DataLoader(dataset, batch_size=len(dataset), shuffle=False)
+
+                # Load all data in one go
+                imgs, labels = next(iter(loader))
+
+                # Split train/test
+                imgs_per_class = {i: [] for i in range(len(class_names))}
+                for img, label in zip(imgs, labels):
+                    class_name = dataset.classes[label]
+                    true_label = label_map[class_name]
+                    imgs_per_class[true_label].append(img)
+
+                for true_label in imgs_per_class:
+                    imgs_list = imgs_per_class[true_label]
+                    train_imgs.extend(imgs_list[:num_train_imgs])
+                    test_imgs.extend(imgs_list[num_train_imgs:num_train_imgs+num_test_imgs])
+
+                    train_labels.append(torch.full((num_train_imgs,), true_label))
+                    test_labels.append(torch.full((num_test_imgs,), true_label))
+
+                    train_corrupts.append(torch.full((num_train_imgs,), corruption_map[corrupt_type]))
+                    test_corrupts.append(torch.full((num_test_imgs,), corruption_map[corrupt_type]))
+
+    # collect normal data
+    for cls in class_names:
+        img_path = os.path.join(normal_data_path, "train", cls, "images")
+        img_files = os.listdir(img_path)
+        train_imgs.extend([
+            transform(Image.open(os.path.join(img_path, f)).convert("RGB")) for f in img_files[:num_train_imgs*5]
+            ])
+        test_imgs.extend([
+            transform(Image.open(os.path.join(img_path, f)).convert("RGB")) for f in img_files[num_train_imgs*5:(num_train_imgs*5)+(num_test_imgs*5)]
+            ])
+        
+        train_labels.append(torch.full((num_train_imgs*5,), label_map[cls]))
+        test_labels.append(torch.full((num_test_imgs*5,), label_map[cls]))
+
+    train_corrupts.append(torch.full((num_train_imgs*5*len(class_names),), corruption_map["normal"]))
+    test_corrupts.append(torch.full((num_test_imgs*5*len(class_names),), corruption_map["normal"]))
+
+    # organize data
+    train_data = (torch.stack(train_imgs), torch.cat(train_labels), torch.cat(train_corrupts))
+    test_data = (torch.stack(test_imgs), torch.cat(test_labels), torch.cat(test_corrupts))
+
+    # shuffling
+    perm = torch.randperm(train_data[0].size(0))
+    train_data = (train_data[0][perm],train_data[1][perm],train_data[2][perm])
+    perm = torch.randperm(test_data[0].size(0))
+    test_data = (test_data[0][perm],test_data[1][perm],test_data[2][perm])
+
+    return train_data, test_data
 
 # ------------ from imgs to patches ------------
 def img_to_patches(img, patch_size):

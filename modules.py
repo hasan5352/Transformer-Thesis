@@ -2,6 +2,8 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn.functional import softmax
+import timm
+from timm.models.layers import DropPath
 from utils import batch_to_patches
 
 
@@ -118,7 +120,7 @@ class TransformerEncoder(nn.Module):
 
 # Patch embedder
 class PatchEmbedding(nn.Module):
-    def __init__(self, embed_dim, patch_size, channels=3):
+    def __init__(self, embed_dim, patch_size, channels=3, erase_prob=0):
         """ 
         Expects a batch of images as pytorch tensors as input and does the following: 
             - Converts images in a batch to patches. 
@@ -133,6 +135,7 @@ class PatchEmbedding(nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.embedding = nn.Linear(channels*patch_size*patch_size, embed_dim)   # linear projection of patches
+        self.erase_prob = erase_prob
         
     def forward(self, batch):
         """Expected input shape=(B,C,H,W)"""
@@ -140,15 +143,22 @@ class PatchEmbedding(nn.Module):
         assert H % self.patch_size == 0 and W % self.patch_size == 0, "Image height and width must be divisible by patch size"
 
         batch = batch_to_patches(batch, self.patch_size)    # (B, N, C * p^2) convert to patches
+        
+        if self.erase_prob > 0: # erasing
+            # Create mask to zero out patches randomly
+            mask = torch.rand(batch.size(0), batch.size(1), device=batch.device) > self.erase_prob
+            mask = mask.unsqueeze(-1)  # (B, N, 1)
+            batch = batch * mask.float()
         return self.embedding(batch)    # (B, N, E)
 
 # Add special tokens and positional encoding
 class AddSpecialTokensAndPositionEncoding(nn.Module):
-    def __init__(self, embed_dim, img_size, patch_size, distillation=False):
+    def __init__(self, embed_dim, img_size, patch_size, distillation=False, corruption=False):
         """ 
         Expects a batch of embedded patches from the PatchEmbedding module and makes it ready for the transformer encoder: 
             - Puts a learnable [CLS] token to patch embeddings for each image.
             - If distillation=True, puts a learnable [distillation] token to patch embeddings for each image.
+            - If corruption=True, puts a learnable [corruption] token to patch embeddings for each image.
             - Adds learnable positional encodings to patch embeddings for each image.
         Args:
             embed_dim (int): Dimension of patch embeddings.
@@ -162,9 +172,12 @@ class AddSpecialTokensAndPositionEncoding(nn.Module):
         super().__init__()
         num_patches = (img_size // patch_size)**2
         x = 1
-        self.distillation = distillation
+        self.distillation, self.corruption = distillation, corruption
         if self.distillation:
             self.distill_token = nn.Parameter(torch.randn(1,1,embed_dim))
+            x += 1
+        if self.corruption:
+            self.corrupt_token = nn.Parameter(torch.randn(1,1,embed_dim))
             x += 1
 
         self.cls_token = nn.Parameter(torch.randn(1,1,embed_dim))
@@ -173,35 +186,78 @@ class AddSpecialTokensAndPositionEncoding(nn.Module):
     def forward(self, batch):
         """Expected input shape=(B,N,E)"""
         B = batch.shape[0]
-        cls_tokens = self.cls_token.expand(B, -1, -1)   # copy cls tokens for all images
-        if self.distillation:
-            distill_tokens = self.distill_token.expand(B, -1, -1)   # copy distill tokens for all images
-            batch = torch.cat((cls_tokens, distill_tokens, batch), dim=1)  # cls, distill, patches      (B, N+x, E)
-        else:
-            batch = torch.cat((cls_tokens, batch), dim=1)          # (B, N+x, E)
+        tokens = [self.cls_token.expand(B, -1, -1)]   # copy cls tokens for all images
+        if self.corruption:
+            tokens += [self.distill_token.expand(B, -1, -1), self.corrupt_token.expand(B, -1, -1)] # copy distill and corrupt tokens for all imgs
+        elif self.distillation:
+            tokens += [self.distill_token.expand(B, -1, -1)]
         
+        batch = torch.cat(tokens + [batch], dim=1)
         return batch + self.pos_encoding  # (B, N+x, E)
 
 # ViT Encoder Block
 class VisionTransformerEncoder(nn.Module):
-    def __init__(self, embedding_dim, heads, mlp_ratio=4, dropout=0, mask=False):
+    def __init__(
+            self, embedding_dim, heads, mlp_ratio=4, 
+            dropout=0, drop_path=0, mask=False
+            ):
         super().__init__()
         self.layer_norm1 = nn.LayerNorm(embedding_dim, eps=1e-6)
         self.multi_head_attention = MultiHeadAttentionFast(embedding_dim, heads, mask=mask)
-        self.dropout1 = nn.Dropout(dropout)
+        self.dropout1 = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.drop_path1 = DropPath(drop_path) if drop_path > 0 else nn.Identity()
+
         self.layer_norm2 = nn.LayerNorm(embedding_dim, eps=1e-6)
         self.mlp = nn.Sequential(
             nn.Linear(embedding_dim, mlp_ratio * embedding_dim), 
             nn.GELU(), 
             nn.Linear(mlp_ratio * embedding_dim, embedding_dim)
             )
-        self.dropout2 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
+        self.drop_path2 = DropPath(drop_path) if drop_path > 0 else nn.Identity()
         
     def forward(self, batch):
         """Input shape=(B,N+x,E)"""
         # First part: Norm + attention + residual
-        batch = self.dropout1(self.multi_head_attention(self.layer_norm1(batch))) + batch   # (B,N+x,E)
+        batch = self.drop_path1(self.dropout1(self.multi_head_attention(self.layer_norm1(batch)))) + batch   # (B,N+x,E)
 
         # second part: Norm + MLP + residual
-        batch = self.dropout2(self.mlp(self.layer_norm2(batch))) + batch
+        batch = self.drop_path2(self.dropout2(self.mlp(self.layer_norm2(batch)))) + batch
         return batch    # (B,N+x,E)
+    
+class CorruptDeitOutputHead(nn.Module):
+    def __init__(self, head_strategy, num_classes, num_img_types, validation=False):
+        """
+        Args:
+            head_strategy (int): 
+                - If 1: return cls, dist, corr at train & (cls+dist)/2 at test
+                - If 2: return cls, dist, corr at train & & (cls+dist+corr@W)/3 at test & corr@W at validation
+                - If 3: return cls + corr@W, dist, corr at train & (cls+dist+corr@W)/3 at test
+        """
+        super().__init__()
+        self.head_strategy = head_strategy
+        self.validation = validation
+        if head_strategy == 2 or head_strategy == 3:
+            self.W = nn.Parameter(torch.randn(num_img_types, num_classes))
+
+    def forward(self, cls_tokens, distill_tokens, corrupt_tokens):
+        """ Input shapes: cls & distill: (B,N), corrupt: (B,T)
+        """
+        if self.training:                               # training time
+            if self.head_strategy == 1:
+                return cls_tokens, distill_tokens, corrupt_tokens
+            elif self.head_strategy == 2:
+                if self.validation:
+                    return corrupt_tokens @ self.W      # train only W with true label in validation (B,N)
+                return cls_tokens, distill_tokens, corrupt_tokens
+            elif self.head_strategy == 3:
+                return (cls_tokens + corrupt_tokens @ self.W)/2, distill_tokens, corrupt_tokens
+        else:
+            return cls_tokens, distill_tokens, corrupt_tokens           # inference time
+            if self.head_strategy == 1:             # calculate all this in test function, in order to analyse metrics per head
+                return (cls_tokens + distill_tokens) / 2
+            elif self.head_strategy == 2 or self.head_strategy == 3:
+                return (cls_tokens + distill_tokens + corrupt_tokens @ self.W) / 3
+            
+
+            
