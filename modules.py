@@ -226,7 +226,7 @@ class VisionTransformerEncoder(nn.Module):
         return batch    # (B,N+x,E)
     
 class CorruptDeitOutputHead(nn.Module):
-    def __init__(self, head_strategy, num_classes, num_img_types, validation=False):
+    def __init__(self, head_strategy, num_classes, num_img_types):
         """
         Args:
             head_strategy (int): 
@@ -236,28 +236,30 @@ class CorruptDeitOutputHead(nn.Module):
         """
         super().__init__()
         self.head_strategy = head_strategy
-        self.validation = validation
-        if head_strategy == 2 or head_strategy == 3:
-            self.W = nn.Parameter(torch.randn(num_img_types, num_classes))
+        if head_strategy == 2:
+            self.corrupt_connection = nn.Linear(num_img_types, num_classes, bias=False)
+        elif head_strategy == 3:
+            self.corrupt_connection = nn.Sequential(
+                nn.Linear(num_img_types, round(math.sqrt(num_img_types*num_classes)), bias=False),
+                nn.GELU(),
+                nn.Linear(round(math.sqrt(num_img_types*num_classes)), num_classes)
+                )
 
     def forward(self, cls_tokens, distill_tokens, corrupt_tokens):
         """ Input shapes: cls & distill: (B,N), corrupt: (B,T)
         """
-        if self.training:                               # training time
+        return cls_tokens, distill_tokens, corrupt_tokens
+        if self.training:               # training time
             if self.head_strategy == 1:
                 return cls_tokens, distill_tokens, corrupt_tokens
-            elif self.head_strategy == 2:
-                if self.validation:
-                    return corrupt_tokens @ self.W      # train only W with true label in validation (B,N)
-                return cls_tokens, distill_tokens, corrupt_tokens
-            elif self.head_strategy == 3:
-                return (cls_tokens + corrupt_tokens @ self.W)/2, distill_tokens, corrupt_tokens
-        else:
-            return cls_tokens, distill_tokens, corrupt_tokens           # inference time
+            else:
+                return (cls_tokens + self.corrupt_connection(corrupt_tokens))/2, distill_tokens, corrupt_tokens
+            
+        else:           # inference time
             if self.head_strategy == 1:             # calculate all this in test function, in order to analyse metrics per head
                 return (cls_tokens + distill_tokens) / 2
-            elif self.head_strategy == 2 or self.head_strategy == 3:
-                return (cls_tokens + distill_tokens + corrupt_tokens @ self.W) / 3
+            else:
+                return (cls_tokens + distill_tokens + self.corrupt_connection(corrupt_tokens)) / 3
             
 
             

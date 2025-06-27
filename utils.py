@@ -156,7 +156,6 @@ def load_CIFAR10(
     
     return normal_data, corrupt_data
 
-
 # load shuffled tiny imagenet
 def load_experimental_TinyImageNet(
         normal_data_path: str,
@@ -166,8 +165,8 @@ def load_experimental_TinyImageNet(
         num_test_imgs=4,
     ):
     """ 
-    Returns transformed normal and corrupted Tiny ImageNet mixed and shuffled together. 
-    Preferably save the data after execution.
+    Saves transformed normal and corrupted Tiny ImageNet mixed and shuffled together. 
+    Also saves the same data resized into 224*224 for teacher input. Preferably save the data after execution.
     Args:
         normal_data_path (str): Path where normal Tiny ImageNet is saved.
         corrupt_data_path (str): Path of the directory containing folders of Tiny ImageNet corruptions.
@@ -177,12 +176,7 @@ def load_experimental_TinyImageNet(
     Returns:
         train and test experiment data. Each is a tuple of tensors: (images, labels, corruption type)
     """
-    mean = (0.4802, 0.4481, 0.3975)
-    std = (0.2302, 0.2265, 0.2262)
-    transform = T.Compose([
-        T.ToTensor(),
-        T.Normalize(mean, std)
-    ])
+    transform = T.ToTensor()
 
     class_names = sorted(os.listdir(os.path.join(normal_data_path, "train")))
     label_map = {cls: i for i, cls in enumerate(class_names)}
@@ -238,18 +232,12 @@ def load_experimental_TinyImageNet(
 
     train_corrupts.append(torch.full((num_train_imgs*5*len(class_names),), corruption_map["normal"]))
     test_corrupts.append(torch.full((num_test_imgs*5*len(class_names),), corruption_map["normal"]))
-
+    
     # organize data
     train_data = (torch.stack(train_imgs), torch.cat(train_labels), torch.cat(train_corrupts))
     test_data = (torch.stack(test_imgs), torch.cat(test_labels), torch.cat(test_corrupts))
 
-    # shuffling
-    perm = torch.randperm(train_data[0].size(0))
-    train_data = (train_data[0][perm],train_data[1][perm],train_data[2][perm])
-    perm = torch.randperm(test_data[0].size(0))
-    test_data = (test_data[0][perm],test_data[1][perm],test_data[2][perm])
-
-    return train_data, test_data
+    return train_data, test_data    
 
 # ------------ from imgs to patches ------------
 def img_to_patches(img, patch_size):
@@ -265,76 +253,5 @@ def batch_to_patches(batch, patch_size):
     patches = batch.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)
     patches = patches.permute(0, 2, 3, 1, 4, 5).reshape(B, -1, C * patch_size * patch_size)
     return patches  # (b, n, c * p^2)
-
-# ------------ testing function ------------
-def test_model(test_batches, model, device='cpu', print_metrics=False):
-    model.eval()
-    total_loss, correct_predictions, total_samples = 0, 0, 0
-    with torch.no_grad():           # Disable gradient computation during evaluation
-        
-        for x_batch, y_batch in test_batches:
-            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-            predictions = model(x_batch)
-            loss = F.cross_entropy(predictions, y_batch)
-
-            #calculate metrics
-            predicted_classes = torch.argmax(predictions, dim=1)
-            correct_predictions += (predicted_classes == y_batch).sum().item()
-            total_samples += y_batch.size(0)
-            total_loss += loss.item() * y_batch.size(0)
-
-    avg_loss = total_loss/total_samples
-    avg_accuracy = correct_predictions / total_samples
-    if print_metrics:
-        print(f"Val-Loss: {avg_loss:.4f}, Val-Accuracy:{avg_accuracy:.2f}")
-    return avg_loss, avg_accuracy
-
-# ------------ training function ------------
-def train_model(
-        train_batches, model, optimizer, 
-        test_batches=None, num_epochs=5, device='cpu',
-        learning_rate=0.01, save_path="vit_saved.pth", print_metrics=False
-        ):
-    train_accs, train_losses, test_accs, test_losses = [], [], [], []
-    for epoch in range(1, num_epochs+1):
-        print(f"------- Epoch {epoch} -------")
-        total_loss, correct_predictions, total_samples = 0, 0, 0
-
-        model.train()
-        for x_batch, y_batch in train_batches:
-            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-
-            predictions = model(x_batch)                    # (B, num_classes)
-            loss = F.cross_entropy(predictions, y_batch)    # avg loss over batch
-
-            # backprop
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            # calculate metrics
-            predicted_classes = torch.argmax(predictions, dim=1)
-            correct_predictions += (predicted_classes == y_batch).sum().item()
-            total_samples += y_batch.size(0)
-            total_loss += loss.item() * y_batch.size(0)
-
-        avg_loss = total_loss/total_samples
-        avg_accuracy = correct_predictions/total_samples
-        train_accs.append(avg_accuracy)
-        train_losses.append(avg_loss)
-
-        if print_metrics:
-            print(f"Train-Loss: {avg_loss:.3f}, Train-Accuracy:{avg_accuracy:.2f}")
-        if test_batches is not None:
-            test_loss, test_acc = test_model(test_batches, model, device=device, print_metrics=print_metrics)
-            test_losses.append(test_loss)
-            test_accs.append(test_acc)
-    
-    # save trained model
-    torch.save(model.state_dict(), save_path)
-    print(f"\nModel saved to {save_path}")
-    if test_batches is not None:
-        return train_losses, train_accs, test_losses, test_accs
-    return train_losses, train_accs
 
 
