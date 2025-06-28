@@ -10,6 +10,7 @@ Tiny-ImageNet-Normal/
 *.gz
 *.pt
 *.pth
+*.json
 
 # Python cache and env files
 __pycache__/

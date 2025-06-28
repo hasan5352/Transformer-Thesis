@@ -12,10 +12,17 @@ EXPERIMENTS:
     - train all teachers and collect for each epoch: acc@1, acc@5, loss, 
     
 TEACHERS:
-- RegNety800mf  --> 6.4M --> 78%
-- EfficientNet-B1  --> 7.8M -- > 80%
+- Deit-Small
+- ConvNet tiny
 
-- If Time left: ResNet18  --> 11.7M --> 70%
+PLAN:
+-> Update train-test-loss functions for finetuning deit3
+-> finetune deit3 on corrupted
+    - Use data augmentations
+    - correct hyperparams
+-> distill deit3 on deit on corrupted data
+-> distill deit3 on Cdeit on corrupted data
+-- Note train-test metrics for all
 
 
 PAPERS:

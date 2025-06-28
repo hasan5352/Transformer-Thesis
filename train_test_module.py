@@ -2,7 +2,21 @@
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+import json
 from typing import List, Tuple
+
+def compute_ece(preds, labels, device, n_bins=15):
+    preds = torch.softmax(preds, dim=1)
+    confidences, preds = preds.max(dim=1)
+    acc = preds.eq(labels)
+    
+    bins = torch.linspace(0, 1, n_bins+1, device=device)
+    ece = torch.zeros(1, device=device)
+    for i in range(n_bins):
+        mask = confidences.gt(bins[i]) & confidences.le(bins[i+1])
+        if mask.sum() > 0:
+            ece += (mask.sum().float() / labels.size(0)) * torch.abs(acc[mask].float().mean() - confidences[mask].mean())
+    return ece.item()
 
 class LossCalculator(nn.Module):
     def __init__(self, teacher_model: nn.Module):
@@ -19,7 +33,8 @@ class LossCalculator(nn.Module):
         assert (len(batches) != 3 and len(tokens) != 3) or (len(batches) == 3 and len(tokens) == 3)
 
         with torch.no_grad():
-            teacher_labels = torch.argmax(self.teacher_model(batches[0]), dim=1)
+            teacher_input = F.interpolate(batches[0], size=(224, 224), mode='bilinear', align_corners=False)
+            teacher_labels = torch.argmax(self.teacher_model(teacher_input), dim=1)
         assert tokens[1].size(1) > teacher_labels.max(), "Teacher head predicting more classes than num_classes"
 
         L_distill = F.cross_entropy(tokens[1], teacher_labels)
