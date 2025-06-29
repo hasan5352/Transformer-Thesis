@@ -3,17 +3,10 @@ EXPERIMENTS:
 
 -> Regularization experiments
     - Dropout
-    - Erasing
+    - Erasing aug
     - Stoch. Depth
     - Repeated Aug
     - label smoothing
-
--> Teacher Experiments:
-    - train all teachers and collect for each epoch: acc@1, acc@5, loss, 
-    
-TEACHERS:
-- Deit-Small
-- ConvNet tiny
 
 PLAN:
 -> Update train-test-loss functions for finetuning deit3
@@ -24,6 +17,15 @@ PLAN:
 -> distill deit3 on Cdeit on corrupted data
 -- Note train-test metrics for all
 
+----------------------------------------------------------------------------------------------------------------
+                                        DEIT3 ex1
+-> lr: 
+    - 1e-5 does not work with or without model frozen, no learning of new head
+    - 5e-4 breaks down model - but with model frozen, good untill 10 epochs
+    
+
+
+---------------------------------------------------------------------------------------------------------------------
 
 PAPERS:
 - AN IMAGE IS WORTH 16X16 WORDS: TRANSFORMERS FOR IMAGE RECOGNITION AT SCALE

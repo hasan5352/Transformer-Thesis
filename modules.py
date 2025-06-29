@@ -120,7 +120,7 @@ class TransformerEncoder(nn.Module):
 
 # Patch embedder
 class PatchEmbedding(nn.Module):
-    def __init__(self, embed_dim, patch_size, channels=3, erase_prob=0):
+    def __init__(self, embed_dim, patch_size, channels=3, mask_prob=0):
         """ 
         Expects a batch of images as pytorch tensors as input and does the following: 
             - Converts images in a batch to patches. 
@@ -135,7 +135,7 @@ class PatchEmbedding(nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.embedding = nn.Linear(channels*patch_size*patch_size, embed_dim)   # linear projection of patches
-        self.erase_prob = erase_prob
+        self.mask_prob = mask_prob
         
     def forward(self, batch):
         """Expected input shape=(B,C,H,W)"""
@@ -144,11 +144,11 @@ class PatchEmbedding(nn.Module):
 
         batch = batch_to_patches(batch, self.patch_size)    # (B, N, C * p^2) convert to patches
         
-        if self.erase_prob > 0: # erasing
-            # Create mask to zero out patches randomly
-            mask = torch.rand(batch.size(0), batch.size(1), device=batch.device) > self.erase_prob
-            mask = mask.unsqueeze(-1)  # (B, N, 1)
-            batch = batch * mask.float()
+        # if self.mask_prob > 0: # erasing
+        #     # Create mask to zero out patches randomly
+        #     mask = torch.rand(batch.size(0), batch.size(1), device=batch.device) > self.mask_prob
+        #     mask = mask.unsqueeze(-1)  # (B, N, 1)
+        #     batch = batch * mask.float()
         return self.embedding(batch)    # (B, N, E)
 
 # Add special tokens and positional encoding
@@ -237,9 +237,9 @@ class CorruptDeitOutputHead(nn.Module):
         super().__init__()
         self.head_strategy = head_strategy
         if head_strategy == 2:
-            self.corrupt_connection = nn.Linear(num_img_types, num_classes, bias=False)
+            self.ffn = nn.Linear(num_img_types, num_classes, bias=False)
         elif head_strategy == 3:
-            self.corrupt_connection = nn.Sequential(
+            self.ffn = nn.Sequential(
                 nn.Linear(num_img_types, round(math.sqrt(num_img_types*num_classes)), bias=False),
                 nn.GELU(),
                 nn.Linear(round(math.sqrt(num_img_types*num_classes)), num_classes)
@@ -253,13 +253,13 @@ class CorruptDeitOutputHead(nn.Module):
             if self.head_strategy == 1:
                 return cls_tokens, distill_tokens, corrupt_tokens
             else:
-                return (cls_tokens + self.corrupt_connection(corrupt_tokens))/2, distill_tokens, corrupt_tokens
+                return (cls_tokens + self.ffn(corrupt_tokens))/2, distill_tokens, corrupt_tokens
             
         else:           # inference time
             if self.head_strategy == 1:             # calculate all this in test function, in order to analyse metrics per head
                 return (cls_tokens + distill_tokens) / 2
             else:
-                return (cls_tokens + distill_tokens + self.corrupt_connection(corrupt_tokens)) / 3
+                return (cls_tokens + distill_tokens + self.ffn(corrupt_tokens)) / 3
             
 
             

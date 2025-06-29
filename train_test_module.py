@@ -4,6 +4,9 @@ import torch.nn.functional as F
 import torch.nn as nn
 import json
 from typing import List, Tuple
+from torchvision.transforms import v2
+import torchvision.transforms as T
+import random
 
 def compute_ece(preds, labels, device, n_bins=15):
     preds = torch.softmax(preds, dim=1)
@@ -18,36 +21,74 @@ def compute_ece(preds, labels, device, n_bins=15):
             ece += (mask.sum().float() / labels.size(0)) * torch.abs(acc[mask].float().mean() - confidences[mask].mean())
     return ece.item()
 
-class LossCalculator(nn.Module):
-    def __init__(self, teacher_model: nn.Module):
-        """ Uses Hard Distillation for L_total.
+class LossCalculatorDeiT(nn.Module):
+    def __init__(self, teacher_model:nn.Module, Cdeit_small_model:nn.Module=None, head_strategy=1):
+        """ 
+        Uses Hard Distillation for L_total.
 
         Args of forward: 
-            batches = (teacher_x_batch, yzbatch, c_batch: Optional)
             tokens = (cls, distill, corrupt: Optional)
+            batches = (teacher_x_batch, yzbatch, c_batch: Optional)
         """
         super().__init__()
         self.teacher_model = teacher_model
+        self.Cdeit_small_model = Cdeit_small_model
+        self.head_strategy = head_strategy
         
-    def forward(self, batches:Tuple[torch.Tensor], tokens:Tuple[torch.Tensor]):
-        assert (len(batches) != 3 and len(tokens) != 3) or (len(batches) == 3 and len(tokens) == 3)
+    def forward(self, tokens:Tuple[torch.Tensor], batches:Tuple[torch.Tensor]):
+        assert (len(batches) != 3 and len(tokens) != 3
+                ) or (len(batches) == 3 and len(tokens) == 3)
+        if self.head_strategy >= 2 and self.Cdeit_small_model is None:
+            raise ValueError("cdeit model not given with this head_strategy")
 
         with torch.no_grad():
             teacher_input = F.interpolate(batches[0], size=(224, 224), mode='bilinear', align_corners=False)
-            teacher_labels = torch.argmax(self.teacher_model(teacher_input), dim=1)
-        assert tokens[1].size(1) > teacher_labels.max(), "Teacher head predicting more classes than num_classes"
+            teacher_input = torch.argmax(self.teacher_model(teacher_input), dim=1)
+        assert tokens[1].size(1) > teacher_input.max(), "Teacher head output shape mismatch"
 
-        L_distill = F.cross_entropy(tokens[1], teacher_labels)
+        L_distill = F.cross_entropy(tokens[1], teacher_input)
         L_cls = F.cross_entropy(tokens[0], batches[1])
         
         if len(tokens) == 3:
             L_corrupt = F.cross_entropy(tokens[2], batches[2])
+            if self.head_strategy == 2 or self.head_strategy == 3:
+                L_cls_corruptFFN = F.cross_entropy(tokens[0] + self.Cdeit_small_model.output_head.ffn(tokens[2]), batches[1])
+                L_total = (L_cls_corruptFFN + L_distill + L_corrupt)/3
+                return L_total, L_cls, L_distill, L_corrupt, L_cls_corruptFFN
             L_total = (L_cls + L_distill + L_corrupt)/3
             return L_total, L_cls, L_distill, L_corrupt
         
         L_total = (L_cls + L_distill)/2
         return L_total, L_cls, L_distill
     
+
+class MyAugments(nn.Module):
+    def __init__(self, num_classes, mixup_p=0, cutmix_p=0, augmix_p=0, randaug_p=0):
+        super().__init__()
+        self.mixup = v2.MixUp(num_classes=num_classes)
+        self.cutmix = v2.CutMix(num_classes=num_classes)
+        self.randaug = T.RandAugment()
+        self.augmix = T.AugMix()
+
+        self.mixup_p = mixup_p
+        self.cutmix_p = cutmix_p
+        self.augmix_p = augmix_p
+        self.randaug_p = randaug_p
+    def forward(self, x_batch, y_batch):
+        with torch.no_grad():
+            if random.random() < self.mixup_p:
+                x_batch, y_batch = self.mixup(x_batch, y_batch)
+            if random.random() < self.cutmix_p:
+                x_batch, y_batch = self.cutmix(x_batch, y_batch)
+            x_batch = (x_batch*255).to(torch.uint8)
+            if random.random() < self.randaug_p:
+                x_batch = torch.stack([self.randaug(img) for img in x_batch])
+            if random.random() < self.augmix_p:
+                x_batch = torch.stack([self.augmix(img) for img in x_batch])
+
+            return x_batch.float().div(255), y_batch
+
+
 
 # Train and test for teacher
 def test_teacher_head(teacher_model:nn.Module, test_batches:list, device):
