@@ -67,23 +67,24 @@ class DistillVisionTransformer(VisionTransformer):
             self, embed_dim, img_size, patch_size, 
             num_classes, channels=3, attention_heads=2, 
             num_encoders=2, mlp_ratio=4, dropout=0, 
-            drop_path=0, mask_prob=0
+            drop_path=0, mask_prob=0, distillation=True
             ):
         super().__init__(embed_dim, img_size, patch_size, num_classes, channels=channels, attention_heads=attention_heads,
                         num_encoders=num_encoders, mlp_ratio=mlp_ratio, dropout=dropout, drop_path=drop_path, mask_prob=mask_prob
                         )
         self.special_tokens_pos_encoding = AddSpecialTokensAndPositionEncoding(
-                        embed_dim, img_size, patch_size, distillation=True
+                        embed_dim, img_size, patch_size, distillation=distillation
                         )
+        self.distillation = distillation
         self.cls_head = nn.Linear(embed_dim, num_classes)
-        self.distill_head = nn.Linear(embed_dim, num_classes)
-
-        self.sim_cls_distill = None
+        if distillation: 
+            self.distill_head = nn.Linear(embed_dim, num_classes)
+            self.sim_cls_distill = 0
     
     def process_forward(self, batch):
         """Expected input shape = (B,C,H,W)"""
         batch = self.patch_embedding(batch)       # (B, N, E)
-        batch = self.special_tokens_pos_encoding(batch)     # (B, N+x, E)
+        batch = self.special_tokens_pos_encoding(batch)     # (B, N+2, E)
         batch = self.vit_encoders(batch)
 
         # return cls, distill tokens. all of shape=(B, E)
@@ -92,15 +93,17 @@ class DistillVisionTransformer(VisionTransformer):
     def forward(self, batch):
         """Expected input shape = (B,C,H,W)"""
         batch, distill_tokens = self.process_forward(batch)
-        self.sim_cls_distill = F.cosine_similarity(batch, distill_tokens, dim=1).mean()
+        if self.distillation : self.sim_cls_distill = F.cosine_similarity(batch, distill_tokens, dim=1).mean()
 
-        batch = self.cls_head(batch)                            # (B, num_classes) cls
+        batch = self.cls_head(batch)                # (B, num_classes) cls
+        if not self.distillation: return batch      # trained by FineTuningModule
+
         distill_tokens = self.distill_head(distill_tokens)      # (B, num_classes) distill
-
-        return batch, distill_tokens        # -- just For experiments
         if self.training:
             return batch, distill_tokens    
         return (batch + distill_tokens) / 2     # during testing
+
+
 
 class CorruptDistillVisionTransformer(DistillVisionTransformer):
     def __init__(
@@ -143,4 +146,10 @@ class CorruptDistillVisionTransformer(DistillVisionTransformer):
         corrupt_tokens = self.corrupt_head(corrupt_tokens)      # (B, num_types)
         return self.output_head(batch, distill_tokens, corrupt_tokens)
             
+
+
+
+
+
+
 

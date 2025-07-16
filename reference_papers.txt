@@ -1,4 +1,19 @@
+-> first
+
+
+-> second
+
+
+-> third
+
+
+
+
 EXPERIMENTS:
+cifar_types = ["brightness", "defocus_blur", "zoom_blur", "motion_blur", "fog", "frost", "snow", "shot_noise", "gaussian_noise", "jpeg_compression"]
+tinyIN_types = ["motion_blur", "shot_noise", "jpeg_compression", "fog"]
+
+
 -> Inference experiments:
 
 -> Regularization experiments
@@ -43,5 +58,9 @@ PAPERS:
 - Improving Robustness of Vision Transformers by Reducing Sensitivity to Patch Corruptions
 
 - A Survey on the Robustness of Computer Vision Models against Common Corruptions
+
+- Parameter-Efficient Fine-Tuning for Pre-Trained Vision Models: A Survey and Benchmark
+
+- Towards Robust Vision Transformer
 
 

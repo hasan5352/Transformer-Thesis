@@ -135,20 +135,13 @@ class PatchEmbedding(nn.Module):
         super().__init__()
         self.patch_size = patch_size
         self.embedding = nn.Linear(channels*patch_size*patch_size, embed_dim)   # linear projection of patches
-        self.mask_prob = mask_prob
         
     def forward(self, batch):
         """Expected input shape=(B,C,H,W)"""
         B, C, H, W = batch.shape
-        assert H % self.patch_size == 0 and W % self.patch_size == 0, "Image height and width must be divisible by patch size"
+        assert H % self.patch_size == 0 and W % self.patch_size == 0, f"Image height and width {H} must be divisible by patch size {self.patch_size}"
 
         batch = batch_to_patches(batch, self.patch_size)    # (B, N, C * p^2) convert to patches
-        
-        # if self.mask_prob > 0: # erasing
-        #     # Create mask to zero out patches randomly
-        #     mask = torch.rand(batch.size(0), batch.size(1), device=batch.device) > self.mask_prob
-        #     mask = mask.unsqueeze(-1)  # (B, N, 1)
-        #     batch = batch * mask.float()
         return self.embedding(batch)    # (B, N, E)
 
 # Add special tokens and positional encoding
@@ -187,10 +180,10 @@ class AddSpecialTokensAndPositionEncoding(nn.Module):
         """Expected input shape=(B,N,E)"""
         B = batch.shape[0]
         tokens = [self.cls_token.expand(B, -1, -1)]   # copy cls tokens for all images
+        if self.distillation:
+            tokens += [self.distill_token.expand(B, -1, -1)]   # same for distill and corrupt
         if self.corruption:
-            tokens += [self.distill_token.expand(B, -1, -1), self.corrupt_token.expand(B, -1, -1)] # copy distill and corrupt tokens for all imgs
-        elif self.distillation:
-            tokens += [self.distill_token.expand(B, -1, -1)]
+            tokens += [self.corrupt_token.expand(B, -1, -1)]
         
         batch = torch.cat(tokens + [batch], dim=1)
         return batch + self.pos_encoding  # (B, N+x, E)
@@ -203,7 +196,7 @@ class VisionTransformerEncoder(nn.Module):
             ):
         super().__init__()
         self.layer_norm1 = nn.LayerNorm(embedding_dim, eps=1e-6)
-        self.multi_head_attention = MultiHeadAttentionFast(embedding_dim, heads, mask=mask)
+        self.attn = MultiHeadAttentionFast(embedding_dim, heads, mask=mask)
         self.dropout1 = nn.Dropout(dropout) if dropout > 0 else nn.Identity()
         self.drop_path1 = DropPath(drop_path) if drop_path > 0 else nn.Identity()
 
@@ -219,10 +212,10 @@ class VisionTransformerEncoder(nn.Module):
     def forward(self, batch):
         """Input shape=(B,N+x,E)"""
         # First part: Norm + attention + residual
-        batch = self.drop_path1(self.dropout1(self.multi_head_attention(self.layer_norm1(batch)))) + batch   # (B,N+x,E)
+        batch = batch + self.drop_path1(self.dropout1(self.attn(self.layer_norm1(batch))))   # (B,N+x,E)
 
         # second part: Norm + MLP + residual
-        batch = self.drop_path2(self.dropout2(self.mlp(self.layer_norm2(batch)))) + batch
+        batch = batch + self.drop_path2(self.dropout2(self.mlp(self.layer_norm2(batch))))
         return batch    # (B,N+x,E)
     
 class CorruptDeitOutputHead(nn.Module):
@@ -240,9 +233,9 @@ class CorruptDeitOutputHead(nn.Module):
             self.ffn = nn.Linear(num_img_types, num_classes, bias=False)
         elif head_strategy == 3:
             self.ffn = nn.Sequential(
-                nn.Linear(num_img_types, round(math.sqrt(num_img_types*num_classes)), bias=False),
+                nn.Linear(num_img_types, num_img_types*4, bias=False),
                 nn.GELU(),
-                nn.Linear(round(math.sqrt(num_img_types*num_classes)), num_classes)
+                nn.Linear(num_img_types*4, num_classes)
                 )
 
     def forward(self, cls_tokens, distill_tokens, corrupt_tokens):

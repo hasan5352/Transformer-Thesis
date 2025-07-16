@@ -3,6 +3,7 @@ CIFAR-10-Normal/
 CIFAR-10-C/
 Tiny-ImageNet-C/
 Tiny-ImageNet-Normal/
+deit3Head/
 *.tar
 *.tar.gz
 *.tgz
